@@ -1,0 +1,491 @@
+---
+title: "Tobias Schatton - Diffbind treatment"
+output:
+   html_document:
+      code_folding: hide
+      df_print: paged
+      highlights: pygments
+      number_sections: true
+      self_contained: true
+      theme: default
+      toc: true
+      toc_float:
+         collapsed: true
+         smooth_scroll: true
+date: "2023-08-31"
+---
+
+## Set-up
+
+Here we load packages and the data ahead of our analyses.
+```{r setup, echo = FALSE, cache = FALSE}
+knitr::opts_chunk$set(dev = c('png', 'cairo_pdf'),
+                      fig.align = 'center', 
+                      fig.height = 5, 
+                      fig.width = 7,
+                      pdf.options(encoding = "ISOLatin9.enc"),
+                      fig.path='figures/',
+                      warning=FALSE, 
+                      message=FALSE,
+                      cache = FALSE,
+                      dev = c("png", "pdf"),
+                      error = TRUE,
+                      highlight = TRUE,
+                      prompt = FALSE,
+                      tidy = FALSE, echo=FALSE)
+```
+
+```{r load-libraries}
+# Load libraries
+library(fgsea)
+library(clusterProfiler)
+library(SummarizedExperiment)
+library(gridExtra)
+library(DESeq2)
+library(tidyverse)
+library(ggrepel)
+library(knitr)
+library(pheatmap)
+library(RColorBrewer)
+library(apeglm)
+library(Category)
+library(ChIPpeakAnno)
+library(DEGreport)
+library(DiffBind)
+library(ChIPseeker)
+library(csaw)
+library(Vennerable)
+library(reshape2)
+library(org.Mm.eg.db)
+library(ReactomePA)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+txdb <- TxDb.Mmusculus.UCSC.mm10.knownGene
+
+
+
+# Set ggplot2 default theme
+ggplot2::theme_set(theme_light(base_size = 14))
+
+sanitize_datatable = function(df, ...) {
+ # remove dashes which cause wrapping
+ DT::datatable(df, ..., rownames=gsub("-", "_", rownames(df)),
+                   colnames=gsub("-", "_", colnames(df)))
+}
+
+
+pruned_annotations <- read.csv("biomart_entrez.csv") %>% .[,-1]
+
+pruned_annotations2 = pruned_annotations %>%
+    arrange(entrezgene_id, ensembl_gene_id) %>%
+    distinct(entrezgene_id, .keep_all = TRUE)
+
+```
+
+
+
+## Count Reads
+
+We load in results from Diffbind Count
+```{r}
+## Load from O2 run
+
+
+alpha_vs_beta <- readRDS("//n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/diffbind/bowtie2/alpha_vs_beta_counts.RDS")
+
+beta_vs_mergeduntreated <- readRDS("/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/diffbind/bowtie2/beta_vs_untreated_mergesplit_counts.RDS")
+
+
+alpha_vs_mergeduntreated <- readRDS("/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/diffbind/bowtie2/alpha_vs_untreated_mergesplit_counts.RDS")
+
+
+
+```
+
+## Change paths and add info
+
+```{r}
+
+
+alpha_vs_beta$class[4, ]<- c(rep("alpha",2), rep("beta",2))
+alpha_vs_mergeduntreated$class[4, ]<- c(rep("alpha",2), rep("untreated",2))
+beta_vs_mergeduntreated$class[4, ]<- c(rep("beta",2), rep("untreated",2))
+
+```
+
+## Normalize and manually add back in metadata and contrasts
+
+We normalize our counts and add back in metadata for our DE run
+```{r}
+## alpha vs. beta
+
+alpha_vs_beta_norm1 <- dba.normalize(alpha_vs_beta)
+
+alpha_vs_beta_norm1 <- dba.contrast(alpha_vs_beta_norm1, contrast = c("Condition","alpha","beta"))
+
+
+
+## alpha vs. untreated 
+
+alpha_vs_mergeduntreated_norm1 <- dba.normalize(alpha_vs_mergeduntreated)
+
+
+alpha_vs_mergeduntreated_norm1 <- dba.contrast(alpha_vs_mergeduntreated_norm1, contrast = c("Condition","untreated","alpha"))
+
+
+
+## beta vs. untreated 
+
+
+beta_vs_mergeduntreated_norm1 <- dba.normalize(beta_vs_mergeduntreated)
+
+beta_vs_mergeduntreated_norm1 <- dba.contrast(beta_vs_mergeduntreated_norm1, contrast = c("Condition","untreated","beta"))
+
+
+
+## Extract Normalized counts for later
+normCounts_AvB <- dba.peakset(alpha_vs_beta_norm1, bRetrieve=TRUE, DataType=DBA_DATA_FRAME)
+normCounts_AvU <- dba.peakset(alpha_vs_mergeduntreated_norm1, bRetrieve=TRUE, DataType=DBA_DATA_FRAME)
+normCounts_BvU <- dba.peakset(beta_vs_mergeduntreated_norm1, bRetrieve=TRUE, DataType=DBA_DATA_FRAME)
+
+write.csv(normCounts_AvB, file="counts_alpha_vs_beta.csv")
+write.csv(normCounts_AvU, file="counts_alpha_vs_untreated.csv")
+write.csv(normCounts_BvU, file="counts_beta_vs_untreated.csv")
+
+```
+
+
+
+## Run DE Analysis
+
+Diffbind uses DESeq2 under the hood. We are only testing for DE in consensus peaks for each factor. The DB.DESeq2 column indicates the number of differentially bound peaks for each contrast. 
+
+```{r}
+
+print("Alpha vs. Beta")
+AVB_norm1 <- dba.analyze(alpha_vs_beta_norm1,bGreylist=F)
+dba.show(AVB_norm1, bContrasts=TRUE)
+
+
+
+
+print("Alpha vs. Untreated Merge Split")
+mAVU_norm1 <- dba.analyze(alpha_vs_mergeduntreated_norm1,bGreylist=F)
+dba.show(mAVU_norm1, bContrasts=TRUE)
+
+
+print("Beta vs. Untreated Merge Split")
+mBVU_norm1 <- dba.analyze(beta_vs_mergeduntreated_norm1,bGreylist=F)
+dba.show(mBVU_norm1, bContrasts=TRUE)
+
+
+
+```
+
+
+## PCA and Volcano Plots 
+
+
+
+Volcano plots plot Log2FoldChange (magnitude and direction of differential expression) vs. -log10(adjusted P-value) (level of significance, higher numbers are more significant). For most peaks are larger in the alpha or beta samples (points to the left).
+
+```{r}
+ dba.plotPCA(AVB_norm1, attributes=c(DBA_CONDITION))
+ dba.plotVolcano(AVB_norm1)
+ 
+ 
+dba.plotPCA(mBVU_norm1, attributes=c(DBA_CONDITION))
+dba.plotVolcano(mBVU_norm1)
+
+
+dba.plotPCA(mAVU_norm1, attributes=c(DBA_CONDITION))
+dba.plotVolcano(mAVU_norm1)
+
+
+
+```
+
+
+
+## Try to make better PCA plots
+
+We extracted normalized counts and re-do the PCA plots ourselves.
+
+```{r}
+
+meta_AvB <- data.frame(colnames(normCounts_AvB)[4:7],c("Alpha","Alpha","Beta","Beta"))
+colnames(meta_AvB) <- c("sample","group")
+rownames(meta_AvB) <- meta_AvB$sample
+
+log_norm_AvB <- log2(normCounts_AvB[,4:7]+1)
+
+pca <- degPCA(log_norm_AvB, meta_AvB, condition = "group", name = "sample", data = T)[["plot"]]
+
+pca_labels <- pca[["labels"]]
+pca_data <- pca[["data"]] %>% as_tibble()
+pca_data %>% 
+    ggplot(aes(x = PC1, y = PC2, color = group)) + 
+    geom_point(size=4) +  
+    xlab(pca_labels$x) + 
+    ylab(pca_labels$y) +
+    ggtitle(paste0("All samples", "\nPCA using ", nrow(normCounts_AvB), " peaks")) +
+    theme(plot.title=element_text(hjust=0.5))
+
+
+
+
+
+
+
+meta_AvU <- data.frame(colnames(normCounts_AvU)[4:7],c("Alpha","Alpha","Untreated","Untreated"))
+colnames(meta_AvU) <- c("sample","group")
+rownames(meta_AvU) <- meta_AvU$sample
+
+log_norm_AvU <- log2(normCounts_AvU[,4:7]+1)
+
+pca <- degPCA(log_norm_AvU, meta_AvU, condition = "group", name = "sample", data = T)[["plot"]]
+
+pca_labels <- pca[["labels"]]
+pca_data <- pca[["data"]] %>% as_tibble()
+pca_data %>% 
+    ggplot(aes(x = PC1, y = PC2, color = group)) + 
+    geom_point(size=4) +  
+    xlab(pca_labels$x) + 
+    ylab(pca_labels$y) +
+    ggtitle(paste0("All samples", "\nPCA using ", nrow(normCounts_AvU), " peaks")) +
+    theme(plot.title=element_text(hjust=0.5))
+
+
+meta_BvU <- data.frame(colnames(normCounts_BvU)[4:7],c("Beta","Beta","Untreated","Untreated"))
+colnames(meta_BvU) <- c("sample","group")
+rownames(meta_BvU) <- meta_BvU$sample
+
+log_norm_BvU <- log2(normCounts_BvU[,4:7]+1)
+
+pca <- degPCA(log_norm_BvU, meta_BvU, condition = "group", name = "sample", data = T)[["plot"]]
+
+pca_labels <- pca[["labels"]]
+pca_data <- pca[["data"]] %>% as_tibble()
+pca_data %>% 
+    ggplot(aes(x = PC1, y = PC2, color = group)) + 
+    geom_point(size=4) +  
+    xlab(pca_labels$x) + 
+    ylab(pca_labels$y) +
+    ggtitle(paste0("All samples", "\nPCA using ", nrow(normCounts_BvU), " peaks")) +
+    theme(plot.title=element_text(hjust=0.5))
+
+
+```
+
+
+
+## Get DB Peaks and look at overlap between the comparisons
+
+
+Approximately 75% of the DB peaks from each analysis (IFAlpha vs. Untreated and IFBeta vs. Untreated) overlap!
+
+```{r, fig.width=6, fig.height=5}
+AvU.DB <- dba.report(mAVU_norm1)
+AvU.FULL <- dba.report(mAVU_norm1, th=1)
+BvU.DB <- dba.report(mBVU_norm1)
+BvU.FULL <- dba.report(mBVU_norm1, th=1)
+
+olap_untreated <- findOverlapsOfPeaks(AvU.DB,BvU.DB, connectedPeaks="merge")
+
+
+makeVennDiagram(olap_untreated, totalTest=3e+3, connectedPeaks = "merge")
+
+
+
+ n <- which(colnames(olap_untreated$venn_cnt)=="Counts") - 1
+ SetNames=c("IFAlpha \n vs. \n Untreated", "IFBeta \n vs. \n Untreated")
+ Weight=olap_untreated$venn_cnt[,"Counts"]
+ names(Weight) <- apply(olap_untreated$venn_cnt[,1:n], 1, paste, collapse="")
+ v<- Venn(SetNames=SetNames, Weight=Weight)
+ 
+ 
+ 
+ 
+ 
+plot(v, doWeights=F, type="circles", doEuler=TRUE,show = list(Universe = FALSE)) 
+
+```
+
+## Annotate peaks
+
+Using the differentially sized peaks at p<0.05 we annotate these using `annotatePeak` from the `ChIPseeker` package. We can see that most DB peaks are in promoter regions which is reassuring.
+
+We also examine how these DB sites look in relation to TSS. All of these figures look very similar for IFAlpha and IFBeta.
+```{r}
+
+
+peakAnnoAlpha <- annotatePeak(AvU.DB, tssRegion=c(-2000, 2000),
+                         TxDb=txdb, annoDb="org.Mm.eg.db")
+
+peakAnnoBeta <- annotatePeak(BvU.DB, tssRegion=c(-2000, 2000),
+                         TxDb=txdb, annoDb="org.Mm.eg.db")
+
+print("IFAlpha vs. Untreated")
+plotAnnoPie(peakAnnoAlpha)
+
+
+print("IFBeta vs. Untreated")
+plotAnnoPie(peakAnnoBeta)
+
+plotDistToTSS(peakAnnoAlpha,
+              title="Distribution of transcription factor-binding loci\nrelative to TSS - Alpha")
+
+plotDistToTSS(peakAnnoAlpha,
+              title="Distribution of transcription factor-binding loci\nrelative to TSS - Beta")
+
+```
+
+## Functional enrichment analysis
+
+We perform various functional enrichments on both sets of results. We further annotate our peaks using `annotatePeakInBatch` from the `ChIPpeakAnno` package to connect peaks to genes. This is a many-to-many mapping algorithm so we can have multiple peaks for a gene and multiple genes for a peak.
+
+
+
+## Functional enrichment Reactome
+
+We do several different functional enrichments. First we use the [Reactome PA](https://bioconductor.org/packages/release/bioc/html/ReactomePA.html)
+
+```{r, fig.height=5, fig.width=10}
+
+
+
+pathway_alpha <- enrichPathway(as.data.frame(peakAnnoAlpha)$geneId, organism="mouse")
+pathway_beta <- enrichPathway(as.data.frame(peakAnnoBeta)$geneId,organism="mouse")
+
+dotplot(pathway_alpha, title="Reactome Enrichment IFAlpha")
+dotplot(pathway_beta, title="Reactome Enrichment IFBeta")
+
+sig_alpha = pathway_alpha@result %>% filter(p.adjust < 0.05)
+sig_beta = pathway_beta@result %>% filter(p.adjust < 0.05)
+
+
+
+write.table(sig_alpha, file="sig_reactome_enrichment_alpha_vs_untreated.csv", sep=",", row.names = FALSE)
+write.table(sig_beta, file="sig_reactome_enrichment_beta_vs_untreated.csv", sep=",", row.names = FALSE)
+
+
+
+```
+
+## Functional enrichment GO - BP
+
+In the package `clusterProfiler`, the groupGO() function is designed for gene classification based on GO distribution at a specific level. 
+
+```{r, fig.height=5, fig.width=10}
+
+annoData <- toGRanges(txdb, feature="gene")
+
+overlaps.anno_Alpha_DE <- annotatePeakInBatch(AvU.DB, AnnotationData=annoData, output="overlapping", maxgap=1000L)
+
+overlaps.anno_Alpha_full <- annotatePeakInBatch(AvU.FULL, AnnotationData=annoData, output="overlapping", maxgap=1000L)
+
+overlaps.anno_Beta_DE <- annotatePeakInBatch(BvU.DB, AnnotationData=annoData, output="overlapping", maxgap=1000L)
+
+overlaps.anno_Beta_full <- annotatePeakInBatch(BvU.FULL, AnnotationData=annoData, output="overlapping", maxgap=1000L)
+
+anno_out_overlaps_Alpha_DE = as.data.frame(overlaps.anno_Alpha_DE)
+anno_out_overlaps_Alpha_FULL = as.data.frame(overlaps.anno_Alpha_full)
+
+anno_out_overlaps_Beta_DE = as.data.frame(overlaps.anno_Beta_DE)
+anno_out_overlaps_Beta_FULL = as.data.frame(overlaps.anno_Beta_full)
+
+
+
+
+ego_alpha <- enrichGO(gene          = na.omit(anno_out_overlaps_Alpha_DE$feature),
+                universe      = na.omit(anno_out_overlaps_Alpha_FULL$feature),
+                OrgDb         = org.Mm.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+        readable      = TRUE)
+
+
+ego_beta <- enrichGO(gene          = na.omit(anno_out_overlaps_Beta_DE$feature),
+                universe      = na.omit(anno_out_overlaps_Beta_FULL$feature),
+                OrgDb         = org.Mm.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+        readable      = TRUE)
+
+
+
+
+dotplot(ego_alpha, title="GO-BP Enrichment IFAlpha")
+dotplot(ego_beta, title="GO-BP Enrichment IFBeta")
+
+
+sig_alpha = ego_alpha@result %>% filter(p.adjust < 0.05)
+sig_beta = ego_beta@result %>% filter(p.adjust < 0.05)
+
+
+
+write.table(ego_alpha, file="sig_GOBP_enrichment_alpha_vs_untreated.csv", sep=",", row.names = FALSE)
+write.table(ego_beta, file="sig_GOBP_enrichment_beta_vs_untreated.csv", sep=",", row.names = FALSE)
+
+```
+
+
+
+
+
+
+
+## Functional enrichment GO - MF
+
+In the package `clusterProfiler`, the groupGO() function is designed for gene classification based on GO distribution at a specific level. 
+
+```{r, fig.height=5, fig.width=10}
+
+
+
+ego_alpha <- enrichGO(gene          = na.omit(anno_out_overlaps_Alpha_DE$feature),
+                universe      = na.omit(anno_out_overlaps_Alpha_FULL$feature),
+                OrgDb         = org.Mm.eg.db,
+                ont           = "MF",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+        readable      = TRUE)
+
+
+ego_beta <- enrichGO(gene          = na.omit(anno_out_overlaps_Beta_DE$feature),
+                universe      = na.omit(anno_out_overlaps_Beta_FULL$feature),
+                OrgDb         = org.Mm.eg.db,
+                ont           = "MF",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+        readable      = TRUE)
+
+
+
+
+dotplot(ego_alpha, title="GO-MF Enrichment IFAlpha")
+dotplot(ego_beta, title="GO-Mf Enrichment IFBeta")
+
+
+sig_alpha = ego_alpha@result %>% filter(p.adjust < 0.05)
+sig_beta = ego_beta@result %>% filter(p.adjust < 0.05)
+
+
+
+write.table(ego_alpha, file="sig_GOMF_enrichment_alpha_vs_untreated.csv", sep=",", row.names = FALSE)
+write.table(ego_beta, file="sig_GOMF_enrichment_beta_vs_untreated.csv", sep=",", row.names = FALSE)
+
+```
+
+# R session
+
+List and version of tools used for the report.
+
+```{r}
+sessionInfo()
+```
