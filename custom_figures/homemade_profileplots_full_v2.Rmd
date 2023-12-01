@@ -1,0 +1,533 @@
+---
+title: "Tobias Schatton - Profile Plots"
+output:
+   html_document:
+      code_folding: hide
+      df_print: paged
+      highlights: pygments
+      number_sections: true
+      self_contained: true
+      theme: default
+      toc: true
+      toc_float:
+         collapsed: true
+         smooth_scroll: true
+date: "2023-08-31"
+---
+
+## Set-up
+
+Here we load packages and the data ahead of our analyses.
+```{r setup, echo = FALSE, cache = FALSE}
+knitr::opts_chunk$set(dev = c('png', 'cairo_pdf'),
+                      fig.align = 'center', 
+                      fig.height = 5, 
+                      fig.width = 7,
+                      pdf.options(encoding = "ISOLatin9.enc"),
+                      fig.path='figures/',
+                      warning=FALSE, 
+                      message=FALSE,
+                      cache = FALSE,
+                      dev = c("png", "pdf"),
+                      error = TRUE,
+                      highlight = TRUE,
+                      prompt = FALSE,
+                      tidy = FALSE, echo=FALSE)
+```
+
+```{r load-libraries}
+# Load libraries
+library(fgsea)
+library(gridExtra)
+library(ggplot2)
+library(tidyverse)
+library(ggrepel)
+library(knitr)
+library(pheatmap)
+library(reshape2)
+library(org.Mm.eg.db)
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(Gviz)
+library(ChIPpeakAnno)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+txdb <- TxDb.Mmusculus.UCSC.mm10.knownGene
+
+
+
+# Set ggplot2 default theme
+ggplot2::theme_set(theme_light(base_size = 14))
+
+sanitize_datatable = function(df, ...) {
+ # remove dashes which cause wrapping
+ DT::datatable(df, ..., rownames=gsub("-", "_", rownames(df)),
+                   colnames=gsub("-", "_", colnames(df)))
+}
+
+
+pruned_annotations <- read.csv("/Users/emb016/Documents/HBC04572_Rosen/data/biomart_entrez.csv") %>% .[,-1]
+
+pruned_annotations2 = pruned_annotations %>%
+    arrange(entrezgene_id, ensembl_gene_id) %>%
+    distinct(entrezgene_id, .keep_all = TRUE)
+
+```
+
+## Goals
+
+Here we are trying to look at open chromatin patterns of three candidate genes: PDCD1, CD274, and PDCD1LG2. For each of these we explore different plots to show these patterns. Below we also plot genomic tracks and TF binding sites of interest (IRF1-9 binding, STAT1, and STAT2).
+
+
+
+```{bash}
+## deeptools commands
+
+multiBamSummary BED-file --BED genes_50bp.bed --bamfiles alpha_1-ready.bam alpha_2-ready.bam beta_1-ready.bam beta_2-ready.bam untreated12_merged_file1_sorted.bam untreated12_merged_file2_sorted.bam --outRawCounts readCounts_ready_50bp.tab
+
+multiBamSummary BED-file --BED genes_500bp.bed --bamfiles alpha_1-ready.bam alpha_2-ready.bam beta_1-ready.bam beta_2-ready.bam untreated12_merged_file1_sorted.bam untreated12_merged_file2_sorted.bam --outRawCounts readCounts_ready_500bp.tab
+
+ multiBamSummary BED-file --BED genes_100bp.bed --bamfiles alpha_1-ready.bam alpha_2-ready.bam beta_1-ready.bam beta_2-ready.bam untreated12_merged_file1_sorted.bam untreated12_merged_file2_sorted.bam --outRawCounts readCounts_ready_100bp.tab
+ 
+ ## command to generate scaling factors
+ 
+ multiBamSummary bins  --bamfiles alpha_1-NF.bam alpha_2-NF.bam beta_1-NF.bam beta_2-NF.bam untreated12_merged_file1_sorted.bam untreated12_merged_file2_sorted.bam --scalingFactors sf.txt
+
+ 
+```
+
+
+
+## Load count matrices - ready
+```{r}
+counts_100 <- read.table("/Users/emb016/Documents/HBC04813_Schatton/figures/readCounts_ready_100bp.tab", header=TRUE)
+counts_50 <- read.table("/Users/emb016/Documents/HBC04813_Schatton/figures/readCounts_ready_50bp.tab", header=TRUE)
+counts_500 <- read.table("/Users/emb016/Documents/HBC04813_Schatton/figures/readCounts_ready_500bp.tab", header=TRUE)
+
+colnames(counts_100)[4:9] <- c("IFAlpha_1", "IFAlpha_2", "IFBeta_1","IFBeta_2","Untreated_1","Untreated2")
+colnames(counts_50)[4:9] <- c("IFAlpha_1", "IFAlpha_2", "IFBeta_1","IFBeta_2","Untreated_1","Untreated2")
+colnames(counts_500)[4:9] <- c("IFAlpha_1", "IFAlpha_2", "IFBeta_1","IFBeta_2","Untreated_1","Untreated2")
+
+
+
+
+counts_50$mid <- (counts_50$start + counts_50$end)/2
+counts_500$mid <- (counts_500$start + counts_500$end)/2
+counts_100$mid <- (counts_100$start + counts_100$end)/2
+
+
+## normalize
+
+## Mapping scaling factors
+#scaling = c(1.5938,1.2124,1.1878,1.3183,0.4789,0.4780)
+
+## Library size factors
+
+#Sample	total reads	size factors
+#alpha_1	83881054	1
+#alpha_2	90167074	1.074939688
+#beta_1	92938466	1.107979235
+#beta_2	87034616	1.037595641
+#untreated_1	85132886	1.014923894
+#untreated_2	85132886	1.014923894
+
+
+scaling = c(1,1.074939688,1.107979235,1.037595641,1.014923894,1.014923894)
+
+counts_50_scaled <- counts_50 
+counts_50_scaled$IFAlpha_1 <- counts_50$IFAlpha_1/scaling[1]
+counts_50_scaled$IFAlpha_2 <- counts_50$IFAlpha_2/scaling[2]
+counts_50_scaled$IFBeta_1 <- counts_50$IFBeta_1/scaling[3]
+counts_50_scaled$IFBeta_2 <- counts_50$IFBeta_2/scaling[4]
+counts_50_scaled$Untreated_1 <- counts_50$Untreated_1/scaling[5]
+counts_50_scaled$Untreated2 <- counts_50$Untreated2/scaling[6]
+
+
+counts_500_scaled <- counts_500 
+counts_500_scaled$IFAlpha_1 <- counts_500$IFAlpha_1/scaling[1]
+counts_500_scaled$IFAlpha_2 <- counts_500$IFAlpha_2/scaling[2]
+counts_500_scaled$IFBeta_1 <- counts_500$IFBeta_1/scaling[3]
+counts_500_scaled$IFBeta_2 <- counts_500$IFBeta_2/scaling[4]
+counts_500_scaled$Untreated_1 <- counts_500$Untreated_1/scaling[5]
+counts_500_scaled$Untreated2 <- counts_500$Untreated2/scaling[6]
+
+
+counts_100_scaled <- counts_100 
+counts_100_scaled$IFAlpha_1 <- counts_100$IFAlpha_1/scaling[1]
+counts_100_scaled$IFAlpha_2 <- counts_100$IFAlpha_2/scaling[2]
+counts_100_scaled$IFBeta_1 <- counts_100$IFBeta_1/scaling[3]
+counts_100_scaled$IFBeta_2 <- counts_100$IFBeta_2/scaling[4]
+counts_100_scaled$Untreated_1 <- counts_100$Untreated_1/scaling[5]
+counts_100_scaled$Untreated2 <- counts_100$Untreated2/scaling[6]
+
+
+```
+
+# PDCD1 - Ready
+
+Here we have normalized counts for the gene (approx +/- 5kb) in different bin size, 50 bp, 100 bp, and 500 bp. We plot the smoothed pattern using geom_smooth to look at the overall effect. When present a black vertical line indicates the location of the promoter enhancer.
+
+```{r}
+
+counts_50_PDCD1 <- subset(counts_50_scaled, counts_50_scaled$chr.=="chr1" & counts_50_scaled$start > 94040500 & counts_50_scaled$end < 	
+94060553)
+
+
+counts_100_PDCD1 <- subset(counts_100_scaled, counts_100_scaled$chr.=="chr1" & counts_100_scaled$start > 94040500 & counts_100_scaled$end < 	
+94060553)
+
+counts_500_PDCD1 <- subset(counts_500_scaled, counts_500_scaled$chr.=="chr1" & counts_500_scaled$start > 94040500 & counts_500_scaled$end < 	
+94060553)
+
+counts_50_PDCD1_melt <- melt(counts_50_PDCD1,id=c("start","end","chr.","mid"))
+counts_100_PDCD1_melt <- melt(counts_100_PDCD1,id=c("start","end","chr.","mid"))
+counts_500_PDCD1_melt <- melt(counts_500_PDCD1,id=c("start","end","chr.","mid"))
+
+
+## Only with averages per group
+
+counts_500_PDCD1$IFAlpha <- (counts_500_PDCD1$IFAlpha_1 + counts_500_PDCD1$IFAlpha_2)/2
+
+counts_500_PDCD1$IFBeta <- (counts_500_PDCD1$IFBeta_1 + counts_500_PDCD1$IFBeta_2)/2
+
+counts_500_PDCD1$Untreated <- (counts_500_PDCD1$Untreated_1 + counts_500_PDCD1$Untreated2)/2
+
+
+counts_50_PDCD1$IFAlpha <- (counts_50_PDCD1$IFAlpha_1 + counts_50_PDCD1$IFAlpha_2)/2
+
+counts_50_PDCD1$IFBeta <- (counts_50_PDCD1$IFBeta_1 + counts_50_PDCD1$IFBeta_2)/2
+
+counts_50_PDCD1$Untreated <- (counts_50_PDCD1$Untreated_1 + counts_50_PDCD1$Untreated2)/2
+
+counts_100_PDCD1$IFAlpha <- (counts_100_PDCD1$IFAlpha_1 + counts_100_PDCD1$IFAlpha_2)/2
+
+counts_100_PDCD1$IFBeta <- (counts_100_PDCD1$IFBeta_1 + counts_100_PDCD1$IFBeta_2)/2
+
+counts_100_PDCD1$Untreated <- (counts_100_PDCD1$Untreated_1 + counts_100_PDCD1$Untreated2)/2
+
+counts_50_PDCD1_avg <- counts_50_PDCD1[,c(1,2,3,10,11,12,13)]
+counts_500_PDCD1_avg <- counts_500_PDCD1[,c(1,2,3,10,11,12,13)]
+counts_100_PDCD1_avg <- counts_100_PDCD1[,c(1,2,3,10,11,12,13)]
+
+
+counts_50_PDCD1_melt_avg <- melt(counts_50_PDCD1_avg,id=c("start","end","chr.","mid"))
+counts_100_PDCD1_melt_avg <- melt(counts_100_PDCD1_avg,id=c("start","end","chr.","mid"))
+counts_500_PDCD1_melt_avg <- melt(counts_500_PDCD1_avg,id=c("start","end","chr.","mid"))
+
+```
+
+## Profile Plot
+
+```{r}
+ggplot(counts_50_PDCD1_melt, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + geom_vline(xintercept=94053700) + ggtitle("PDCD1 Full 50 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("pink","pink1","tomato3","tomato4","grey75","grey85"))
+
+
+ggplot(counts_100_PDCD1_melt, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + geom_vline(xintercept=94053700) + ggtitle("PDCD1 Full 100 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("pink","pink1","tomato3","tomato4","grey75","grey85"))
+
+
+ggplot(counts_500_PDCD1_melt, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + geom_vline(xintercept=94053700) + ggtitle("PDCD1 Full 500 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("pink","pink1","tomato3","tomato4","grey75","grey85"))
+
+```
+
+## Profile Plot averaged replicates
+
+```{r}
+ggplot(counts_50_PDCD1_melt_avg, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + geom_vline(xintercept=94053700) + ggtitle("PDCD1 Full 50 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("firebrick1","firebrick4","grey58")) + ylim(0,NA)
+
+
+ggplot(counts_100_PDCD1_melt_avg, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + geom_vline(xintercept=94053700) + ggtitle("PDCD1 Full 100 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("firebrick1","firebrick4","grey58")) + ylim(0,NA)
+
+
+
+ggplot(counts_500_PDCD1_melt_avg, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + geom_vline(xintercept=94053700) + ggtitle("PDCD1 Full 500 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("firebrick1","firebrick4","grey58")) + ylim(0,NA)
+
+
+```
+
+
+
+
+# CD274 - Ready
+
+
+Here we have normalized counts for the gene (approx +/- 5kb) in different bin size, 50 bp, 100 bp, and 500 bp. We plot the smoothed pattern using geom_smooth to look at the overall effect. When present a black vertical line indicates the location of the promoter enhancer.
+
+```{r}
+
+counts_50_CD274 <- subset(counts_50_scaled, counts_50_scaled$chr.=="chr19" & counts_50_scaled$start > 29357455 & counts_50_scaled$end < 29391095) 
+
+
+counts_100_CD274 <- subset(counts_100_scaled, counts_100_scaled$chr.=="chr19" & counts_100_scaled$start > 29357455 & counts_100_scaled$end < 29391095) 
+
+counts_500_CD274 <- subset(counts_500_scaled, counts_500_scaled$chr.=="chr19" & counts_500_scaled$start > 29357455 & counts_500_scaled$end < 29391095) 
+
+counts_50_CD274_melt <- melt(counts_50_CD274,id=c("start","end","chr.","mid"))
+counts_100_CD274_melt <- melt(counts_100_CD274,id=c("start","end","chr.","mid"))
+counts_500_CD274_melt <- melt(counts_500_CD274,id=c("start","end","chr.","mid"))
+
+
+
+## Only with averages per group
+
+counts_500_CD274$IFAlpha <- (counts_500_CD274$IFAlpha_1 + counts_500_CD274$IFAlpha_2)/2
+
+counts_500_CD274$IFBeta <- (counts_500_CD274$IFBeta_1 + counts_500_CD274$IFBeta_2)/2
+
+counts_500_CD274$Untreated <- (counts_500_CD274$Untreated_1 + counts_500_CD274$Untreated2)/2
+
+
+counts_50_CD274$IFAlpha <- (counts_50_CD274$IFAlpha_1 + counts_50_CD274$IFAlpha_2)/2
+
+counts_50_CD274$IFBeta <- (counts_50_CD274$IFBeta_1 + counts_50_CD274$IFBeta_2)/2
+
+counts_50_CD274$Untreated <- (counts_50_CD274$Untreated_1 + counts_50_CD274$Untreated2)/2
+
+counts_100_CD274$IFAlpha <- (counts_100_CD274$IFAlpha_1 + counts_100_CD274$IFAlpha_2)/2
+
+counts_100_CD274$IFBeta <- (counts_100_CD274$IFBeta_1 + counts_100_CD274$IFBeta_2)/2
+
+counts_100_CD274$Untreated <- (counts_100_CD274$Untreated_1 + counts_100_CD274$Untreated2)/2
+
+counts_50_CD274_avg <- counts_50_CD274[,c(1,2,3,10,11,12,13)]
+counts_500_CD274_avg <- counts_500_CD274[,c(1,2,3,10,11,12,13)]
+counts_100_CD274_avg <- counts_100_CD274[,c(1,2,3,10,11,12,13)]
+
+
+counts_50_CD274_melt_avg <- melt(counts_50_CD274_avg,id=c("start","end","chr.","mid"))
+counts_100_CD274_melt_avg <- melt(counts_100_CD274_avg,id=c("start","end","chr.","mid"))
+counts_500_CD274_melt_avg <- melt(counts_500_CD274_avg,id=c("start","end","chr.","mid"))
+
+
+
+```
+
+
+```{r}
+ggplot(counts_50_CD274_melt, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + geom_vline(xintercept=29367400) + ggtitle("CD274 Full 50 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("pink","pink1","tomato3","tomato4","grey75","grey85"))
+
+
+ggplot(counts_100_CD274_melt, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + geom_vline(xintercept=29367400) + ggtitle("CD274 Full 100 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("pink","pink1","tomato3","tomato4","grey75","grey85"))
+
+ggplot(counts_500_CD274_melt, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + geom_vline(xintercept=29367400) + ggtitle("CD274 Full 500 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("pink","pink1","tomato3","tomato4","grey75","grey85"))
+```
+
+
+## Profile Plot averaged replicates
+
+```{r}
+ggplot(counts_50_CD274_melt_avg, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + geom_vline(xintercept=29367400) + ggtitle("CD274 Full 50 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("firebrick1","firebrick4","grey58")) + ylim(0,NA)
+
+
+ggplot(counts_100_CD274_melt_avg, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + geom_vline(xintercept=29367400) + ggtitle("CD274 Full 100 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("firebrick1","firebrick4","grey58")) + ylim(0,NA)
+
+
+ggplot(counts_500_CD274_melt_avg, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + geom_vline(xintercept=29367400) + ggtitle("CD274 Full 500 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("firebrick1","firebrick4","grey58")) + ylim(0,NA)
+
+
+```
+
+
+
+
+# PDCD1LG2 - Ready
+
+
+Here we have normalized counts for the gene (approx +/- 5kb) in different bin size, 50 bp, 100 bp, and 500 bp. We plot the smoothed pattern using geom_smooth to look at the overall effect. When present a black vertical line indicates the location of the promoter enhancer.
+
+```{r}
+
+counts_50_PDCD1LG2 <- subset(counts_50, counts_50$chr.=="chr19" & counts_50$start > 29389947 & counts_50$end < 29476105)
+
+
+counts_100_PDCD1LG2 <- subset(counts_100, counts_100$chr.=="chr19" & counts_100$start > 29389947 & counts_100$end < 29476105)
+
+counts_500_PDCD1LG2 <- subset(counts_500, counts_500$chr.=="chr19" & counts_500$start > 29389947 & counts_500$end < 29476105)
+
+counts_50_PDCD1LG2_melt <- melt(counts_50_PDCD1LG2,id=c("start","end","chr.","mid"))
+counts_100_PDCD1LG2_melt <- melt(counts_100_PDCD1LG2,id=c("start","end","chr.","mid"))
+counts_500_PDCD1LG2_melt <- melt(counts_500_PDCD1LG2,id=c("start","end","chr.","mid"))
+
+## Only with averages per group
+
+counts_500_PDCD1LG2$IFAlpha <- (counts_500_PDCD1LG2$IFAlpha_1 + counts_500_PDCD1LG2$IFAlpha_2)/2
+
+counts_500_PDCD1LG2$IFBeta <- (counts_500_PDCD1LG2$IFBeta_1 + counts_500_PDCD1LG2$IFBeta_2)/2
+
+counts_500_PDCD1LG2$Untreated <- (counts_500_PDCD1LG2$Untreated_1 + counts_500_PDCD1LG2$Untreated2)/2
+
+
+counts_50_PDCD1LG2$IFAlpha <- (counts_50_PDCD1LG2$IFAlpha_1 + counts_50_PDCD1LG2$IFAlpha_2)/2
+
+counts_50_PDCD1LG2$IFBeta <- (counts_50_PDCD1LG2$IFBeta_1 + counts_50_PDCD1LG2$IFBeta_2)/2
+
+counts_50_PDCD1LG2$Untreated <- (counts_50_PDCD1LG2$Untreated_1 + counts_50_PDCD1LG2$Untreated2)/2
+
+counts_100_PDCD1LG2$IFAlpha <- (counts_100_PDCD1LG2$IFAlpha_1 + counts_100_PDCD1LG2$IFAlpha_2)/2
+
+counts_100_PDCD1LG2$IFBeta <- (counts_100_PDCD1LG2$IFBeta_1 + counts_100_PDCD1LG2$IFBeta_2)/2
+
+counts_100_PDCD1LG2$Untreated <- (counts_100_PDCD1LG2$Untreated_1 + counts_100_PDCD1LG2$Untreated2)/2
+
+counts_50_PDCD1LG2_avg <- counts_50_PDCD1LG2[,c(1,2,3,10,11,12,13)]
+counts_500_PDCD1LG2_avg <- counts_500_PDCD1LG2[,c(1,2,3,10,11,12,13)]
+counts_100_PDCD1LG2_avg <- counts_100_PDCD1LG2[,c(1,2,3,10,11,12,13)]
+
+
+counts_50_PDCD1LG2_melt_avg <- melt(counts_50_PDCD1LG2_avg,id=c("start","end","chr.","mid"))
+counts_100_PDCD1LG2_melt_avg <- melt(counts_100_PDCD1LG2_avg,id=c("start","end","chr.","mid"))
+counts_500_PDCD1LG2_melt_avg <- melt(counts_500_PDCD1LG2_avg,id=c("start","end","chr.","mid"))
+
+```
+
+
+```{r}
+ggplot(counts_50_PDCD1LG2_melt, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + ggtitle("PDCD1LG2 Full 50 bp") + xlab("Position") + ylab("Read Density")+ scale_color_manual(values = c("pink","pink1","tomato3","tomato4","grey75","grey85"))#+ geom_vline(xintercept=29367400)
+
+
+ggplot(counts_100_PDCD1LG2_melt, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + ggtitle("PDCD1LG2 Full 100 bp") + xlab("Position") + ylab("Read Density")+ scale_color_manual(values = c("pink","pink1","tomato3","tomato4","grey75","grey85"))#+ geom_vline(xintercept=29367400)
+
+ggplot(counts_500_PDCD1LG2_melt, aes(x=mid,y=value, color=variable))   + geom_smooth(se = FALSE) + ggtitle("PDCD1LG2 Full 500 bp") + xlab("Position") + ylab("Read Density")+ scale_color_manual(values = c("pink","pink1","tomato3","tomato4","grey75","grey85"))#+ geom_vline(xintercept=29367400)
+```
+
+
+## Profile Plot averaged replicates
+
+```{r}
+ggplot(counts_50_PDCD1LG2_melt_avg, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) + ggtitle("PDCD1LG2 Full 50 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("firebrick1","firebrick4","grey58")) + ylim(0,NA)
+
+
+
+ggplot(counts_100_PDCD1LG2_melt_avg, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) +  ggtitle("PDCD1LG2 Full 100 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("firebrick1","firebrick4","grey58")) + ylim(0,NA)
+
+
+
+ggplot(counts_500_PDCD1LG2_melt_avg, aes(x=mid,y=value, color=variable))  + geom_smooth(se = FALSE) +  ggtitle("PDCD1LG2 Full 500 bp") + xlab("Position") + ylab("Read Density") + scale_color_manual(values = c("firebrick1","firebrick4","grey58")) + ylim(0,NA)
+
+
+```
+
+
+
+# Genome tracks
+
+Here we plot the same coordinates as genomic tracks. We also plot the locations of any IRF or STAT motifs in the regions. This includes IRF1, IRF2, IRF3, IRF4, IRF5, IRF6, IRF7, IRF8, IRF9, STAT1, STAT1::STAT2, and Stat2
+All IRF motifs are colored pink and STAT motifs are green.
+
+**Note that due to package limitations I cannot combine these with the above figures. However, it should be easy in photoshop given that the genomic coordinates are identical.
+
+## Plot Tracks - PDCD1
+```{r}
+motifs <- ChIPpeakAnno::toGRanges("/Users/emb016/Documents/HBC04813_Schatton/motif_binding_sites_bigcategories.bed.txt", header=FALSE, format="BED")
+
+library(rtracklayer)
+
+
+strack_1 <- SequenceTrack(Mmusculus, chromosome = "chr1")
+strack_19 <- SequenceTrack(Mmusculus, chromosome = "chr19")
+grtrack <- GeneRegionTrack(txdb, genome = "mm10",
+                           chromosome = "chr1", name = "Gene Model",
+                           transcriptAnnotation='symbol')
+
+groups <- motifs$thickStart
+dmotifs <- AnnotationTrack(range=motifs, genome = "mm10",  labelPos = "above")
+feature(dmotifs) <- groups
+plotTracks(list(grtrack,dmotifs), chr="chr1", from = 94040500, to = 94060553, transcriptAnnotation = "symbol", just.group="above",  cex.feature = 0, legend=TRUE, IRF = "hotpink1", STAT = "darkgreen", col=NULL)
+```
+
+
+## Plot Tracks - CD274
+```{r}
+grtrack <- GeneRegionTrack(txdb, genome = "mm10",
+                           chromosome = "chr19", name = "Gene Model",
+                           transcriptAnnotation='symbol')
+
+
+plotTracks(list(grtrack,dmotifs), chr="chr19", from = 29357455, to = 29391095, transcriptAnnotation = "symbol", just.group="above",  cex.feature = 0, legend=TRUE, IRF = "hotpink1", STAT = "darkgreen", col=NULL)
+```
+
+
+## Plot Tracks - PDCD1LG2
+```{r}
+grtrack <- GeneRegionTrack(txdb, genome = "mm10",
+                           chromosome = "chr19", name = "Gene Model",
+                           transcriptAnnotation='symbol')
+
+
+plotTracks(list(grtrack,dmotifs), chr="chr19", from = 29389947, to = 29476105, transcriptAnnotation = "symbol", just.group="above",  cex.feature = 0, legend=TRUE, IRF = "hotpink1", STAT = "darkgreen", col=NULL)
+```
+
+
+
+# Genome tracks 2 - motifs ONLY in open chromatin, only IRF9, 5'-3'
+
+Here we plot the same coordinates as genomic tracks. We also plot the locations of any IRF or STAT motifs in the regions. This includes IRF9, STAT1, STAT1::STAT2, and Stat2
+All IRF9 is colored pink and STAT motifs are green.
+
+
+**Open chromatin defined when the counts in one of the averaged groups is greater >10 for a window. Using 100 bp windows**
+
+**Note that due to package limitations I cannot combine these with the above figures. However, it should be easy in photoshop given that the genomic coordinates are identical.
+
+## Plot Tracks - PDCD1
+```{r}
+motifs2 <- ChIPpeakAnno::toGRanges("/Users/emb016/Documents/HBC04813_Schatton/motif_binding_sites_bigcategories_v2.txt", header=FALSE, format="BED")
+
+##subset to only open chromatin
+
+PDCD1_open <- subset(counts_100_PDCD1_avg, counts_100_PDCD1_avg$IFAlpha>10 | counts_100_PDCD1_avg$IFBeta>10 | counts_100_PDCD1_avg$Untreated>10)
+CD274_open <- subset(counts_100_CD274_avg, counts_100_CD274_avg$IFAlpha>10 | counts_100_CD274_avg$IFBeta>10 | counts_100_CD274_avg$Untreated>10)
+PDCD1LG2_open <- subset(counts_100_PDCD1LG2_avg, counts_100_PDCD1LG2_avg$IFAlpha>10 | counts_100_PDCD1LG2_avg$IFBeta>10 | counts_100_PDCD1LG2_avg$Untreated>10)
+
+open <- rbind(PDCD1_open, CD274_open, PDCD1LG2_open)
+open$strand <- "."
+colnames(open)[1] <- "chr"
+open2 <- ChIPpeakAnno::toGRanges(open[,c(1,2,3,8)], header=TRUE, format="CSV")
+
+open_motifs <-  subsetByOverlaps(motifs2, ranges=open2, ignore.strand = F)
+
+
+
+library(rtracklayer)
+
+
+strack_1 <- SequenceTrack(Mmusculus, chromosome = "chr1")
+strack_19 <- SequenceTrack(Mmusculus, chromosome = "chr19")
+grtrack <- GeneRegionTrack(txdb, genome = "mm10",
+                           chromosome = "chr1", name = "Gene Model",
+                           transcriptAnnotation='symbol')
+
+groups <- open_motifs$thickStart
+dmotifs <- AnnotationTrack(range=open_motifs, genome = "mm10",  labelPos = "above")
+feature(dmotifs) <- groups
+plotTracks(list(grtrack,dmotifs), chr="chr1", from = 94040500, to = 94060553, transcriptAnnotation = "symbol", just.group="above",  cex.feature = 0, legend=TRUE, IRF = "hotpink1", STAT = "darkgreen", col=NULL,reverseStrand = TRUE)
+```
+
+
+## Plot Tracks - CD274
+```{r}
+grtrack <- GeneRegionTrack(txdb, genome = "mm10",
+                           chromosome = "chr19", name = "Gene Model",
+                           transcriptAnnotation='symbol')
+
+
+plotTracks(list(grtrack,dmotifs), chr="chr19", from = 29357455, to = 29391095, transcriptAnnotation = "symbol", just.group="above",  cex.feature = 0, legend=TRUE, IRF = "hotpink1", STAT = "darkgreen", col=NULL)
+```
+
+
+## Plot Tracks - PDCD1LG2
+```{r}
+grtrack <- GeneRegionTrack(txdb, genome = "mm10",
+                           chromosome = "chr19", name = "Gene Model",
+                           transcriptAnnotation='symbol')
+
+
+plotTracks(list(grtrack,dmotifs), chr="chr19", from = 29389947, to = 29476105, transcriptAnnotation = "symbol", just.group="above",  cex.feature = 0, legend=TRUE, IRF = "hotpink1", STAT = "darkgreen", col=NULL)
+```
+
+
+
+# R session
+
+List and version of tools used for the report.
+
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,223 @@
+---
+title: "Tobias Schatton - Diffbind treatment"
+output:
+   html_document:
+      code_folding: hide
+      df_print: paged
+      highlights: pygments
+      number_sections: true
+      self_contained: true
+      theme: default
+      toc: true
+      toc_float:
+         collapsed: true
+         smooth_scroll: true
+date: "2023-08-31"
+---
+
+## Set-up
+
+Here we load packages and the data ahead of our analyses.
+```{r setup, echo = FALSE, cache = FALSE}
+knitr::opts_chunk$set(dev = c('png', 'cairo_pdf'),
+                      fig.align = 'center', 
+                      fig.height = 5, 
+                      fig.width = 7,
+                      pdf.options(encoding = "ISOLatin9.enc"),
+                      fig.path='figures/',
+                      warning=FALSE, 
+                      message=FALSE,
+                      cache = FALSE,
+                      dev = c("png", "pdf"),
+                      error = TRUE,
+                      highlight = TRUE,
+                      prompt = FALSE,
+                      tidy = FALSE, echo=FALSE)
+```
+
+```{r load-libraries}
+# Load libraries
+library(fgsea)
+library(clusterProfiler)
+library(SummarizedExperiment)
+library(gridExtra)
+library(DESeq2)
+library(tidyverse)
+library(ggrepel)
+library(knitr)
+library(pheatmap)
+library(RColorBrewer)
+library(apeglm)
+library(Category)
+library(ChIPpeakAnno)
+library(DEGreport)
+library(DiffBind)
+library(ChIPseeker)
+library(csaw)
+library(Vennerable)
+library(reshape2)
+library(org.Mm.eg.db)
+library(ReactomePA)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+txdb <- TxDb.Mmusculus.UCSC.mm10.knownGene
+
+
+
+# Set ggplot2 default theme
+ggplot2::theme_set(theme_light(base_size = 14))
+
+sanitize_datatable = function(df, ...) {
+ # remove dashes which cause wrapping
+ DT::datatable(df, ..., rownames=gsub("-", "_", rownames(df)),
+                   colnames=gsub("-", "_", colnames(df)))
+}
+
+
+pruned_annotations <- read.csv("biomart_entrez.csv") %>% .[,-1]
+
+pruned_annotations2 = pruned_annotations %>%
+    arrange(entrezgene_id, ensembl_gene_id) %>%
+    distinct(entrezgene_id, .keep_all = TRUE)
+
+```
+
+
+
+## Count Reads
+
+We load in results from Diffbind Count
+```{r}
+## Load from O2 run
+
+
+all <- readRDS("//n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/diffbind/bowtie2/all_counts.RDS")
+
+
+
+
+```
+
+## Change paths and add info
+
+```{r}
+
+
+all$class[4, ]<- c(rep("alpha",2), rep("beta",2), rep("untreated",2))
+
+```
+
+## Normalize and manually add back in metadata and contrasts
+
+We normalize our counts and add back in metadata for our DE run
+```{r}
+## alpha vs. beta
+
+all_norm1 <- dba.normalize(all)
+
+## Extract Normalized counts for later
+
+normCounts_all <- dba.peakset(all_norm1, bRetrieve=TRUE, DataType=DBA_DATA_FRAME)
+
+write.csv(normCounts_all, file="counts_all_samples.csv")
+
+```
+
+
+## Try to make better PCA plots
+
+We extracted normalized counts and re-do the PCA plots ourselves.
+
+```{r}
+
+meta_all <- data.frame(colnames(normCounts_all)[5:10],c("Alpha","Alpha","Beta","Beta","Untreated","Untreated"))
+colnames(meta_all) <- c("sample","group")
+rownames(meta_all) <- meta_all$sample
+
+log_norm_all <- log2(normCounts_all[,5:10]+1)
+
+pca <- degPCA(log_norm_all, meta_all, condition = "group", name = "sample", data = T)[["plot"]]
+
+pca_labels <- pca[["labels"]]
+pca_data <- pca[["data"]] %>% as_tibble()
+pca_data %>% 
+    ggplot(aes(x = PC1, y = PC2, color = group)) + 
+    geom_point(size=4) +  
+    xlab(pca_labels$x) + 
+    ylab(pca_labels$y) +
+    ggtitle(paste0("All samples", "\nPCA using ", nrow(normCounts_all), " peaks")) +
+    theme(plot.title=element_text(hjust=0.5)) + scale_color_manual(values = c("firebrick1","firebrick4","grey58")) 
+
+
+pdf("PCA_plot_all.pdf", width = 6, height = 5)
+
+pca_data %>% 
+    ggplot(aes(x = PC1, y = PC2, color = group)) + 
+    geom_point(size=5) +  
+    xlab(pca_labels$x) + 
+    ylab(pca_labels$y) +
+    ggtitle(paste0("All samples", "\nPCA using ", nrow(normCounts_all), " peaks")) +
+    theme(plot.title=element_text(hjust=0.5)) + scale_color_manual(values = c("firebrick1","firebrick4","grey58")) 
+
+dev.off()
+
+```
+
+## Get DB peaks
+
+```{r}
+all_db <- readRDS("/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/diffbind/bowtie2/all_counts_dbpeaks.RDS")
+
+all_db$class[4, ]<- c(rep("alpha",2), rep("beta",2), rep("untreated",2))
+
+## Extract Normalized counts for later
+
+all_norm_db <- dba.peakset(all_db) 
+
+normCounts_all_db <- dba.peakset(all_norm_db, bRetrieve=TRUE, DataType=DBA_DATA_FRAME)
+
+write.csv(normCounts_all_db, file="counts_all_samples_dbpeaks.csv")
+
+```
+
+
+## Make heatmap
+```{r, height=25, width=10}
+## We have waaay too many peaks to plot. We randomly sub-sample 3k
+
+ar_it_rand_idx <- sample(34577,3000, replace=FALSE)
+
+normCounts_all_db_subset <- normCounts_all_db[ar_it_rand_idx,]
+
+meta <- c(rep("IFAlpha",2), rep("IFBeta",2), rep("Untreated",2)) %>% data.frame()
+colnames(meta) <- "Groups"
+rownames(meta) <- colnames(normCounts_all_db_subset)[4:9]
+### Set a color palette
+heat_colors <- colorRampPalette(c("blue", "black", "yellow"))(100)
+anno_colors <- list(Groups=c(IFAlpha="firebrick1",IFBeta="firebrick4", Untreated="grey58"))
+
+
+### Run pheatmap using the metadata data frame for the annotation (11 x 5)
+
+pdf("heatmap.pdf", height=20, width=10)
+pheatmap(normCounts_all_db_subset[,4:9], 
+    color = heat_colors, 
+    cluster_rows = T, 
+    show_rownames = F,
+    annotation = meta, 
+    annotation_colors = anno_colors,
+    border_color = NA, 
+    fontsize = 10, 
+    scale = "row", 
+    fontsize_row = 10, 
+    height = 20)
+
+dev.off()
+```
+
+# R session
+
+List and version of tools used for the report.
+
+```{r}
+sessionInfo()
+```
