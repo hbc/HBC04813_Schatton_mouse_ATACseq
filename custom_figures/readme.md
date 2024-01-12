@@ -1,1 +1,1 @@
-The client asked for a number of custom figures. Here is the code used to generate these. The input data can be found here: HBC Team Folder (1)/Consults/tobias_schatton/[hbc04813] SchattonPDCD1 induction by interferon in murine melanoma cell line (ATACseq)/custom figures/input data
+Code used to generate custom figures. Input data is provided in a zipped folder. 
