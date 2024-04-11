@@ -1,0 +1,493 @@
+---
+title: "melanoma_scRNA"
+output: html_document
+date: "2024-03-14"
+---
+
+```{r setup, include=FALSE}
+# Load libraries
+library(Seurat)
+library(harmony)
+library(knitr)
+library(rmarkdown)
+library(tidyverse)
+library(data.table)
+library(DT)
+library(patchwork)
+library(clustree)
+library(SingleCellExperiment)
+library(Matrix.utils)
+library(DESeq2)
+#library(future)
+# Set seed for reproducibility
+set.seed(1454944673L)
+opts_chunk[["set"]](
+    audodep = TRUE,
+    cache = FALSE,
+    cache.lazy = FALSE,
+    error = TRUE,
+    echo = FALSE,
+    fig.height = 5L,
+    fig.retina = 2L,
+    fig.width = 9.6,
+    message = FALSE,
+    tidy = TRUE,
+    warning = TRUE
+)
+
+
+if (future::supportsMulticore()) {
+  future::plan(future::multicore)
+} else {
+  future::plan(future::multisession)
+}
+```
+
+
+# Third data set
+
+**99 malignant cells expressing PDCD1, 92634 malignant cells NOT expressing PDCD1**
+
+```{r, eval=F}
+
+expression_matrix <- ReadMtx(
+  mtx = "GSE200218_sc_sn_counts.mtx", features = "GSE200218_sc_sn_gene_names.csv",
+  cells = "GSE200218_sc_sn_metadata.csv", feature.column=1, skip.cell=1, skip.feature = 1, cell.sep = ",", feature.sep = ","
+)
+
+
+
+
+seurat_obj2 <- CreateSeuratObject(counts = expression_matrix)
+metadata <- read.csv("GSE200218_sc_sn_metadata.csv", row.names = 1)
+metadata_sub <- metadata[,c(1:17,237,242,243)]
+
+if(all(rownames(metadata_sub) == rownames(seurat_obj2@meta.data))) {
+  seurat_obj2@meta.data <- metadata_sub
+}
+
+##subset to malignent cells
+Idents(object = seurat_obj2) <- "malignant"
+seurat_mal2 <- subset(x = seurat_obj2, idents = "malignant")
+seurat_mal2[["RNA"]]$data <- seurat_mal2[["RNA"]]$counts
+
+
+## remove genes with no exp
+counts <- seurat_mal2[["RNA"]]$counts
+genes.use <- rowSums(counts) > 0
+genes.use <- names(genes.use[genes.use])
+seurat_mal3 <- seurat_mal2[genes.use, ]
+
+
+options(future.globals.maxSize = 1000000 * 1024^2)
+# seurat_norm <- ScaleData(seurat_mal3, model.use = "linear")
+# # # Calculate PCs and UMAP
+# seurat_norm <- RunPCA(seurat_norm)
+# seurat_norm <- RunUMAP(seurat_norm, 1:40)
+
+#saveRDS(seurat_norm, file = "/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/reviewer/third_dataset_scaled.rds")
+
+
+seurat_norm <- readRDS("/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/reviewer/third_dataset_scaled.rds")
+
+
+
+
+seurat_pdcd12 <- subset(x = seurat_norm, subset = PDCD1 > 0)
+seurat_zero <- subset(x = seurat_norm, subset = PDCD1 == 0)
+
+```
+
+
+## Extract normalized counts per patient for hot and cold genes
+```{r}
+#Change to single cell object
+sce <- as.SingleCellExperiment(seurat_obj2) 
+
+
+#Make groups and aggregate based on clusters and sample IDs
+groups <- colData(sce)[, c("orig.ident")]
+
+
+aggr_counts <- aggregate.Matrix(t(counts(sce)), 
+                                groupings = groups, fun = "sum")
+
+aggr_counts <- t(aggr_counts)
+
+
+metadata_comparison1 <- colData(sce) %>% 
+  as.data.frame() %>% 
+  dplyr::select(organ, patient ,orig.ident)
+
+metadata_comparison1 <- metadata_comparison1[!duplicated(metadata_comparison1), ]
+rownames(metadata_comparison1) <- metadata_comparison1$orig.ident    
+
+
+colnames(aggr_counts) <- gsub(" ","_",colnames(aggr_counts))
+
+dim(metadata_comparison1)
+head(metadata_comparison1)
+
+sample_order <- match(colnames(aggr_counts), rownames(metadata_comparison1))
+metadata_comparison1 <- metadata_comparison1[sample_order,]
+
+dds <- DESeqDataSetFromMatrix(aggr_counts, 
+                              colData = metadata_comparison1, 
+                              design = ~ organ)
+
+dds <- DESeq(dds)
+
+plotDispEsts(dds)
+
+norm_counts <- data.frame(counts(dds, normalized = TRUE))
+norm_goi <- data.frame(t(subset(norm_counts, rownames(norm_counts) %in% c("CXCL9", "CXCL10", "CXCL11", "CXCR3", "CD3", "CD4", "CD8a", "CD8b", "CD274", "PDCD1", "CXCR4", "CCL5", "CXCL1", "CXCL2", "CCL20", "CD3", "CD4", "CD8", "CD8A", "CD8B")))) 
+```
+
+
+```{r}
+##subset to malignent cells
+Idents(object = seurat_obj2) <- "cell_type_fine"
+seurat_sub <- subset(x = seurat_obj2, idents = c("Tumor cells", "CD4+ T cells"))
+seurat_sub[["RNA"]]$data <- seurat_sub[["RNA"]]$counts
+
+
+
+
+#Change to single cell object
+sce <- as.SingleCellExperiment(seurat_sub) 
+
+
+#Make groups and aggregate based on clusters and sample IDs
+groups <- colData(sce)[, c("orig.ident", "cell_type_fine")]
+
+
+aggr_counts <- aggregate.Matrix(t(counts(sce)), 
+                                groupings = groups, fun = "sum")
+
+aggr_counts <- t(aggr_counts)
+
+
+metadata_comparison1 <- colData(sce) %>% 
+  as.data.frame() %>% 
+  dplyr::select(organ, patient ,cell_type_fine, orig.ident, cell_type_main)
+
+metadata_comparison1$cell_type_fine <- gsub(" ","_", metadata_comparison1$cell_type_fine)
+rownames(metadata_comparison1) <- paste0(metadata_comparison1$orig.ident,"_",metadata_comparison1$cell_type_fine)
+
+colnames(aggr_counts) <- gsub(" ","_",colnames(aggr_counts))
+
+dim(metadata_comparison1)
+head(metadata_comparison1)
+
+sample_order <- match(colnames(aggr_counts), rownames(metadata_comparison1))
+metadata_comparison1 <- metadata_comparison1[sample_order,]
+    
+
+dds <- DESeqDataSetFromMatrix(aggr_counts, 
+                              colData = metadata_comparison1, 
+                              design = ~ patient + cell_type_fine)
+
+dds <- DESeq(dds)
+
+plotDispEsts(dds)
+
+norm_counts <- data.frame(counts(dds, normalized = TRUE))
+norm_goi <- data.frame(t(subset(norm_counts, rownames(norm_counts) %in% c("IFNAR1","IFNAR2", "IFNGR1","IFNGR2")))) 
+norm_goi$cell <- metadata_comparison1$cell_type_fine
+norm_goi$organ <- metadata_comparison1$organ
+norm_goi$patient <- metadata_comparison1$patient
+
+to_graph <- melt(norm_goi, id=c("cell","organ", "patient"))
+
+
+ggplot(to_graph, aes(x=variable,y=value,color=organ)) + geom_boxplot() + geom_point(alpha=0.5, position = position_dodge(width = .75))+ facet_wrap(~cell) + xlab("Gene") + ylab("Normalized Expression")
+
+
+
+```
+
+
+
+## Subsample PDCD1 negative cells to better match PDCD1 pos nFeature distribution
+```{r}
+seurat_norm <- readRDS("/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/reviewer/third_dataset_scaled.rds")
+
+
+
+
+
+seurat_pdcd12 <- subset(x = seurat_norm, subset = PDCD1 > 0)
+
+counts_pdcd12 <- data.frame(seurat_pdcd12[["RNA"]]$data)
+
+seurat_zero <- subset(x = seurat_norm, subset = PDCD1 == 0)
+counts_zero <- data.frame(seurat_zero[["RNA"]]$data)
+
+## calculate quantiles for pdcd1 data and select from each quantile for 
+
+
+
+
+
+
+GOI <- c("CXCL9", "CXCL10", "CXCL11", "CXCR3", "CD3", "CD4", "CD8a", "CD8b", "CD274", "PDCD1", "CXCR4", "CCL5", "CXCL1", "CXCL2", "CCL20", "ADAR", "DDX60","HERC6", "IRF7", "OASL", "PSME2", "STAT2", "TRIM25", "BST2", "DHX58", "IFI35", "ISG15", "OGFR","RSAD2", "TDRD7", "UBE2L6", "CASP1", "EIF2AK2", "IFIH1", "ISG20", "PARP12", "RTP4", "TRAFD1", "USP18", "CMPK2", "EPSTI1", "IFIT2", "MX1", "PARP14", "SAMD9L", "TRIM14", "GBP4", "IFIT3", "NMI", "PNPT1", "SP110", "TRIM21")
+
+control <- c("HPRT1","PUM1","RPS2","CLTA","MRPL19","CASC3" ,"POLR2A","TBP","GUSB","SNRPA","CCSER2","ANKRD17", "SYMPK" )
+
+norm_counts_pdcd1 <- subset(counts_pdcd12, rownames(counts_pdcd12) %in% control)
+
+non_exp_pdcd1 <- data.frame(rowSums(norm_counts_pdcd1==0))
+non_exp_pdcd1$gene <- rownames(norm_counts_pdcd1)
+colnames(non_exp_pdcd1)[1] <- "cells_without_expression_pdcd1"
+non_exp_pdcd1$prop_no_exp_pdcd1 <- non_exp_pdcd1$cells_without_expression_pdcd1 /99
+
+
+norm_counts_zero <- subset(counts_zero, rownames(counts_zero) %in% control)
+
+non_exp_zero <- data.frame(rowSums(norm_counts_zero==0))
+non_exp_zero$gene <- rownames(norm_counts_zero)
+colnames(non_exp_zero)[1] <- "cells_without_expression_nopdcd1"
+non_exp_zero$prop_no_exp_nopdcd1 <- non_exp_zero$cells_without_expression_nopdcd1 /92634
+
+all_GOI <- cbind(non_exp_pdcd1,non_exp_zero)
+#write.table(all_GOI, "/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/reviewer/third_dataset_zerocounts_controlgenes.csv", sep=",", row.names = F, quote = F)
+
+
+
+zero_meta <- data.frame(seurat_zero@meta.data)
+pdcd1_meta <- data.frame(seurat_pdcd12@meta.data)
+
+zero_meta$PDCD1 <- "Negative"
+pdcd1_meta$PDCD1 <- "Positive"
+full_meta <- rbind(zero_meta, pdcd1_meta)
+
+## subset with minimums nCount and nFeature from pdcd1-pos data
+seurat_zero2 <- subset(x = seurat_zero, 
+                    subset = (nCount_RNA >= 1077)
+                    & (nFeature_RNA >= 628) 
+                    )
+
+
+zero_meta <- data.frame(seurat_zero2@meta.data)
+pdcd1_meta <- data.frame(seurat_pdcd12@meta.data)
+
+zero_meta$PDCD1 <- "Negative"
+pdcd1_meta$PDCD1 <- "Positive"
+full_meta <- rbind(zero_meta, pdcd1_meta)
+
+## Sample the subset data to 10k cells with a mean similar to the pdcd1 cells for nfeature
+
+#z <- sample(seurat_zero2$nFeature_RNA, 10000, prob = (seurat_zero2$nFeature_RNA >= mean(seurat_pdcd12$nFeature_RNA)) + 0.1)
+
+#good_neg <- subset(seurat_zero2, cells= names(z))
+#write_rds(good_neg, "/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/reviewer/third_dataset_pdcd1_negative_subset.RDS")
+
+good_neg <- readRDS("/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/reviewer/third_dataset_pdcd1_negative_subset.RDS")
+
+zero_meta <- data.frame(good_neg@meta.data)
+pdcd1_meta <- data.frame(seurat_pdcd12@meta.data)
+
+zero_meta$PDCD1 <- "Negative"
+pdcd1_meta$PDCD1 <- "Positive"
+full_meta <- rbind(zero_meta, pdcd1_meta)
+
+```
+
+
+
+```{r}
+ggplot(full_meta, aes(x=nFeature_RNA, fill=PDCD1)) + geom_density(alpha=0.5)
+ggplot(full_meta, aes(x=nCount_RNA, fill=PDCD1)) + geom_density(alpha=0.5)
+
+```
+
+
+
+## Subsample PDCD1 negative cells to better match PDCD1 pos nFeature distribution - approach 2
+```{r}
+seurat_norm <- readRDS("/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/reviewer/third_dataset_scaled.rds")
+
+seurat_zero <- subset(x = seurat_norm, subset = PDCD1 == 0)
+
+seurat_pdcd12 <- subset(x = seurat_norm, subset = PDCD1 > 0)
+
+## Generate quantiles for nFeature from PDCD1 pos cells
+
+quantile(seurat_pdcd12$nFeature_RNA)
+
+## make quantiles form seurat zero
+
+q1 <- subset(x = seurat_zero, 
+                    subset = (nFeature_RNA >= 0)
+                    & (nFeature_RNA <= 3360) 
+                    )
+q2 <-  subset(x = seurat_zero, 
+                    subset = (nFeature_RNA >= 3361)
+                    & (nFeature_RNA <= 5236) 
+                    )
+q3 <-  subset(x = seurat_zero, 
+                    subset = (nFeature_RNA >= 5237)
+                    & (nFeature_RNA <= 6620) 
+                    )
+q4 <-  subset(x = seurat_zero, 
+                    subset = (nFeature_RNA >= 6621)
+                    & (nFeature_RNA <= 9919) 
+                    )
+
+## Sample 2500 cells from each quantile
+
+q1_sam <- q1[,sample(2500)]
+q2_sam <- q2[,sample(2500),]
+q3_sam <- q3[,sample(2500),]
+q4_sam <- q4[,sample(2500),]
+
+seurat_zero_sub <- merge(x =q1_sam, 
+                      y = list(q2_sam, q3_sam, q4_sam))
+seurat_zero_sub[["RNA"]] <- JoinLayers(seurat_zero_sub[["RNA"]])
+
+
+GOI <- c("CXCL9", "CXCL10", "CXCL11", "CXCR3", "CD3", "CD4", "CD8a", "CD8b", "CD274", "PDCD1", "CXCR4", "CCL5", "CXCL1", "CXCL2", "CCL20", "ADAR", "DDX60","HERC6", "IRF7", "OASL", "PSME2", "STAT2", "TRIM25", "BST2", "DHX58", "IFI35", "ISG15", "OGFR","RSAD2", "TDRD7", "UBE2L6", "CASP1", "EIF2AK2", "IFIH1", "ISG20", "PARP12", "RTP4", "TRAFD1", "USP18", "CMPK2", "EPSTI1", "IFIT2", "MX1", "PARP14", "SAMD9L", "TRIM14", "GBP4", "IFIT3", "NMI", "PNPT1", "SP110", "TRIM21")
+
+control <- c("HPRT1","PUM1","RPS2","CLTA","MRPL19","CASC3" ,"POLR2A","TBP","GUSB","SNRPA","CCSER2","ANKRD17", "SYMPK" )
+
+counts_pdcd12 <- data.frame(seurat_pdcd12[["RNA"]]$data)
+
+norm_counts_pdcd1 <- subset(counts_pdcd12, rownames(counts_pdcd12) %in% c(control,GOI))
+
+non_exp_pdcd1 <- data.frame(rowSums(norm_counts_pdcd1==0))
+non_exp_pdcd1$gene <- rownames(norm_counts_pdcd1)
+colnames(non_exp_pdcd1)[1] <- "cells_without_expression_pdcd1"
+non_exp_pdcd1$prop_no_exp_pdcd1 <- non_exp_pdcd1$cells_without_expression_pdcd1 /99
+
+counts_zero <- data.frame(seurat_zero_sub[["RNA"]]$data)
+norm_counts_zero <- subset(counts_zero, rownames(counts_zero) %in% c(control, GOI))
+
+non_exp_zero <- data.frame(rowSums(norm_counts_zero==0))
+non_exp_zero$gene <- rownames(norm_counts_zero)
+colnames(non_exp_zero)[1] <- "cells_without_expression_nopdcd1"
+non_exp_zero$prop_no_exp_nopdcd1 <- non_exp_zero$cells_without_expression_nopdcd1 /10000
+
+all_GOI <- cbind(non_exp_pdcd1,non_exp_zero)
+#write.table(all_GOI, "/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/reviewer/third_dataset_zerocounts_controlgenes_quantilesubset.csv", sep=",", row.names = F, quote = F)
+
+
+
+zero_meta <- data.frame(seurat_zero_sub@meta.data)
+pdcd1_meta <- data.frame(seurat_pdcd12@meta.data)
+
+zero_meta$PDCD1 <- "Negative"
+pdcd1_meta$PDCD1 <- "Positive"
+full_meta <- rbind(zero_meta, pdcd1_meta)
+
+
+
+```
+
+
+
+```{r}
+ggplot(full_meta, aes(x=nFeature_RNA, fill=PDCD1)) + geom_density(alpha=0.5)
+ggplot(full_meta, aes(x=nCount_RNA, fill=PDCD1)) + geom_density(alpha=0.5)
+
+```
+
+
+
+# missing genes per fine celltype
+
+```{r}
+inf_genes <- c("IFNB1","IFNA5","IFNAR2","IFNAR1","IFNA1","IFNA14","IFNA10","IFNA17","IFNA13","IFNA2","IFNA21","IFNA16","IFNA8","PTPRC", "CD3D", "CD8A", "CD19", "PDCD1", "MKI67")
+
+
+# RNA counts for genes of interest
+counts_rna <- FetchData(seurat_obj2[["RNA"]], vars=inf_genes)
+# Celltype information for each cell
+celltype <- unname(seurat_obj2$cell_type_fine)
+counts_rna$celltype <- celltype
+
+# Iterate over each celltype
+list_dropout <- list()
+celltypes <- sort(unique(seurat_obj2$cell_type_fine))
+for (ct in celltypes) {
+   counts_rna_ct <- counts_rna[counts_rna$celltype == ct, ]
+   ct_dropout <- c()
+   
+   for (gene in inf_genes) {
+      pct_dropout <- sum(counts_rna_ct[gene] == 0.0) / dim(counts_rna_ct)[1]
+      ct_dropout <- c(ct_dropout, pct_dropout)
+   }
+   names(ct_dropout) <- inf_genes
+   list_dropout[[ct]] <- ct_dropout
+}
+
+df_dropout <- data.frame(list_dropout)
+
+write.table(df_dropout, file="/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/reviewer/IFNgenes_percNonexpressingcells.csv", sep=",", quote = F)
+
+```
+
+
+
+```{r}
+GOI <- c("CXCL9", "CXCL10", "CXCL11", "CXCR3", "CD3", "CD4", "CD8a", "CD8b", "CD274", "PDCD1", "CXCR4", "CCL5", "CXCL1", "CXCL2", "CCL20", "ADAR", "DDX60","HERC6", "IRF7", "OASL", "PSME2", "STAT2", "TRIM25", "BST2", "DHX58", "IFI35", "ISG15", "OGFR","RSAD2", "TDRD7", "UBE2L6", "CASP1", "EIF2AK2", "IFIH1", "ISG20", "PARP12", "RTP4", "TRAFD1", "USP18", "CMPK2", "EPSTI1", "IFIT2", "MX1", "PARP14", "SAMD9L", "TRIM14", "GBP4", "IFIT3", "NMI", "PNPT1", "SP110", "TRIM21")
+
+control <- c("HPRT1","PUM1","RPS2","CLTA","MRPL19","CASC3" ,"POLR2A","TBP","GUSB","SNRPA","CCSER2","ANKRD17", "SYMPK" )
+
+norm_counts_pdcd1 <- subset(counts_pdcd12, rownames(counts_pdcd12) %in% c(GOI,control))
+
+non_exp_pdcd1 <- data.frame(rowSums(norm_counts_pdcd1==0))
+non_exp_pdcd1$gene <- rownames(norm_counts_pdcd1)
+colnames(non_exp_pdcd1)[1] <- "cells_without_expression_pdcd1"
+non_exp_pdcd1$prop_no_exp_pdcd1 <- non_exp_pdcd1$cells_without_expression_pdcd1 /99
+
+
+counts_zero <- data.frame(seurat_zero_sub[["RNA"]]$data)
+norm_counts_zero <- subset(counts_zero, rownames(counts_zero) %in% c(GOI,control))
+
+non_exp_zero <- data.frame(rowSums(norm_counts_zero==0))
+non_exp_zero$gene <- rownames(norm_counts_zero)
+colnames(non_exp_zero)[1] <- "cells_without_expression_nopdcd1"
+non_exp_zero$prop_no_exp_nopdcd1 <- non_exp_zero$cells_without_expression_nopdcd1 /10000
+
+all_GOI <- cbind(non_exp_pdcd1,non_exp_zero)
+#write.table(all_GOI, "/n/data1/cores/bcbio/PIs/tobias_schatton/schatton_atacseq_hbc04813/reviewer/third_dataset_zerocounts_allgenes_subsetnegativecells.csv", sep=",", row.names = F, quote = F)
+
+```
+
+```{r}
+
+all_GOI <- all_GOI[-15,-5]
+all_GOI <- all_GOI %>% mutate(control = case_when( (all_GOI$gene %in% control) ~ "Control", !(all_GOI$gene %in% control) ~ "Gene_of_Interest"))
+
+all_GOI$diff <- (all_GOI$prop_no_exp_pdcd1 - all_GOI$prop_no_exp_nopdcd1)
+
+ggplot(all_GOI, aes(x=diff, fill=control)) + geom_histogram(alpha=0.5) + facet_wrap(~control, scales="free_y")
+ggplot(all_GOI, aes(x=diff, fill=control)) + geom_density(alpha=0.5) 
+
+```
+
+
+```{r}
+
+
+
+to_graph <- data.frame(t(norm_counts_pdcd1))
+
+
+out <- vector("list", length = 49)
+names <- colnames(to_graph)[1:49]
+
+for (i in seq(1,49)) {
+  
+  to_graph$temp=to_graph[[i]]
+  
+  out[[i]] <- ggplot(to_graph,aes(x=PDCD1,y=temp)) + geom_point(alpha=0.5) + ylab(paste0(names[[i]])) + theme(legend.position = "NONE") + geom_smooth(method="lm")
+
+  
+}
+
+out
+```
+
+
+
