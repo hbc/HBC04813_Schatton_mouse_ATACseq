@@ -144,69 +144,6 @@ norm_goi <- data.frame(t(subset(norm_counts, rownames(norm_counts) %in% c("CXCL9
 ```
 
 
-```{r}
-##subset to malignent cells
-Idents(object = seurat_obj2) <- "cell_type_fine"
-seurat_sub <- subset(x = seurat_obj2, idents = c("Tumor cells", "CD4+ T cells"))
-seurat_sub[["RNA"]]$data <- seurat_sub[["RNA"]]$counts
-
-
-
-
-#Change to single cell object
-sce <- as.SingleCellExperiment(seurat_sub) 
-
-
-#Make groups and aggregate based on clusters and sample IDs
-groups <- colData(sce)[, c("orig.ident", "cell_type_fine")]
-
-
-aggr_counts <- aggregate.Matrix(t(counts(sce)), 
-                                groupings = groups, fun = "sum")
-
-aggr_counts <- t(aggr_counts)
-
-
-metadata_comparison1 <- colData(sce) %>% 
-  as.data.frame() %>% 
-  dplyr::select(organ, patient ,cell_type_fine, orig.ident, cell_type_main)
-
-metadata_comparison1$cell_type_fine <- gsub(" ","_", metadata_comparison1$cell_type_fine)
-rownames(metadata_comparison1) <- paste0(metadata_comparison1$orig.ident,"_",metadata_comparison1$cell_type_fine)
-
-colnames(aggr_counts) <- gsub(" ","_",colnames(aggr_counts))
-
-dim(metadata_comparison1)
-head(metadata_comparison1)
-
-sample_order <- match(colnames(aggr_counts), rownames(metadata_comparison1))
-metadata_comparison1 <- metadata_comparison1[sample_order,]
-    
-
-dds <- DESeqDataSetFromMatrix(aggr_counts, 
-                              colData = metadata_comparison1, 
-                              design = ~ patient + cell_type_fine)
-
-dds <- DESeq(dds)
-
-plotDispEsts(dds)
-
-norm_counts <- data.frame(counts(dds, normalized = TRUE))
-norm_goi <- data.frame(t(subset(norm_counts, rownames(norm_counts) %in% c("IFNAR1","IFNAR2", "IFNGR1","IFNGR2")))) 
-norm_goi$cell <- metadata_comparison1$cell_type_fine
-norm_goi$organ <- metadata_comparison1$organ
-norm_goi$patient <- metadata_comparison1$patient
-
-to_graph <- melt(norm_goi, id=c("cell","organ", "patient"))
-
-
-ggplot(to_graph, aes(x=variable,y=value,color=organ)) + geom_boxplot() + geom_point(alpha=0.5, position = position_dodge(width = .75))+ facet_wrap(~cell) + xlab("Gene") + ylab("Normalized Expression")
-
-
-
-```
-
-
 
 ## Subsample PDCD1 negative cells to better match PDCD1 pos nFeature distribution
 ```{r}
@@ -467,27 +404,6 @@ ggplot(all_GOI, aes(x=diff, fill=control)) + geom_density(alpha=0.5)
 ```
 
 
-```{r}
-
-
-
-to_graph <- data.frame(t(norm_counts_pdcd1))
-
-
-out <- vector("list", length = 49)
-names <- colnames(to_graph)[1:49]
-
-for (i in seq(1,49)) {
-  
-  to_graph$temp=to_graph[[i]]
-  
-  out[[i]] <- ggplot(to_graph,aes(x=PDCD1,y=temp)) + geom_point(alpha=0.5) + ylab(paste0(names[[i]])) + theme(legend.position = "NONE") + geom_smooth(method="lm")
-
-  
-}
-
-out
-```
 
 
 
